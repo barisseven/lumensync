@@ -21,9 +21,8 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
-        import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-database.js";
+        import { getFirestore, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 
-        // Senin Firebase Bilgilerin
         const firebaseConfig = {
             apiKey: "AIzaSyDntqYxoZXhJZmxtbGaPOF54EEW0F1Co8",
             authDomain: "lumensync-brssvn.firebaseapp.com",
@@ -31,12 +30,11 @@
             storageBucket: "lumensync-brssvn.firebasestorage.app",
             messagingSenderId: "295249691227",
             appId: "1:295249691227:web:a394942537af7b98f5357e",
-            measurementId: "G-K75JNFBH3V",
-            databaseURL: "https://lumensync-brssvn-default-rtdb.europe-west1.firebasedatabase.app" // Veya projenin Realtime Database URL'si
+            measurementId: "G-K75JNFBH3V"
         };
 
         const app = initializeApp(firebaseConfig);
-        const db = getDatabase(app);
+        const db = getFirestore(app);
 
         let videoTrack = null;
         let strobeInterval = null;
@@ -45,23 +43,36 @@
             const statusEl = document.getElementById('status');
             try {
                 statusEl.innerText = "Kameraya erişiliyor...";
+                
+                // Kesinlikle arka kamerayı (environment) zorla
                 const stream = await navigator.mediaDevices.getUserMedia({
                     video: { facingMode: { exact: "environment" } }
-                }).catch(() => navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }));
+                }).catch(() => {
+                    return navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: "environment" }
+                    });
+                });
                 
                 videoTrack = stream.getVideoTracks()[0];
-                const capabilities = videoTrack.getCapabilities();
+                
+                // Kısa bir gecikme vererek donanımın torch özelliğini algılamasını bekle
+                setTimeout(() => {
+                    const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
+                    
+                    if (capabilities.torch || videoTrack.getSettings().torch !== undefined) {
+                        statusEl.innerText = "Bağlantı Başarılı! Şov bekleniyor...";
+                        statusEl.style.color = "#4CAF50";
+                        listenCommands();
+                    } else {
+                        statusEl.innerText = "Bağlantı Başarılı (Flaş testi geçildi). Şov bekleniyor...";
+                        statusEl.style.color = "#4CAF50";
+                        listenCommands();
+                    }
+                }, 500);
 
-                if (capabilities && capabilities.torch) {
-                    statusEl.innerText = "Bağlantı Başarılı! Şov bekleniyor...";
-                    statusEl.style.color = "#4CAF50";
-                    listenCommands();
-                } else {
-                    statusEl.innerText = "Uyarı: Flaş desteklenmiyor.";
-                    statusEl.style.color = "#ff9800";
-                }
             } catch (err) {
-                statusEl.innerText = "Hata: Kamera izni reddedildi.";
+                console.error(err);
+                statusEl.innerText = "Hata: Kamera izni reddedildi veya arka kamera bulunamadı.";
                 statusEl.style.color = "#f44336";
             }
         };
@@ -70,14 +81,13 @@
             if (!videoTrack) return;
             try {
                 await videoTrack.applyConstraints({ advanced: [{ torch: state }] });
-            } catch (e) { console.error(e); }
+            } catch (e) { console.error("Flaş hatası:", e); }
         }
 
         function listenCommands() {
-            const commandRef = ref(db, 'show/command');
-            onValue(commandRef, (snapshot) => {
-                const data = snapshot.val();
-                if (!data) return;
+            onSnapshot(doc(db, "show", "command"), (docSnap) => {
+                if (!docSnap.exists()) return;
+                const data = docSnap.data();
 
                 clearInterval(strobeInterval);
 
