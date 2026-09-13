@@ -6,13 +6,18 @@
     <title>Lumen Sync - Katılımcı</title>
     <style>
         body { font-family: Arial, sans-serif; background: #121212; color: #fff; text-align: center; padding: 40px 20px; margin: 0; }
-        .welcome-box { max-width: 400px; margin: 0 auto; background: #1e1e1e; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        .welcome-box { max-width: 400px; margin: 0 auto; background: #1e1e1e; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); z-index: 10; position: relative; }
         button { width: 100%; padding: 15px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; background: #ff9800; color: #fff; }
         #status { margin-top: 15px; font-size: 14px; color: #aaa; word-break: break-word; }
+        
+        /* Tam ekran ışık katmanı (Arka planda siyah başlar, komutla beyaz/çakar olur) */
+        #flash-screen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000000; z-index: 1; transition: background 0.05s ease; }
         #cam { display: none; }
     </style>
 </head>
 <body>
+    <div id="flash-screen"></div>
+
     <div class="welcome-box" id="ui-box">
         <h2>✨ Lumen Sync</h2>
         <p>Konser şovu için izin verin:</p>
@@ -40,7 +45,7 @@
         const db = getFirestore(app);
 
         const statusEl = document.getElementById('status');
-        const uiBox = document.getElementById('ui-box');
+        const flashScreen = document.getElementById('flash-screen');
         
         let videoTrack = null;
         let strobeTimer = null;
@@ -62,17 +67,15 @@
                 await videoEl.play();
                 videoTrack = stream.getVideoTracks()[0];
 
-                statusEl.innerText = "Bağlantı Başarılı! Şov bekleniyor...";
+                statusEl.innerText = "Kamera + Ekran Işığı Hazır!";
                 statusEl.style.color = "#4CAF50";
-                
-                // İsteğe bağlı olarak butonu gizleyebilir veya sadeleştirebiliriz
-                // uiBox.style.display = 'none'; 
 
                 listenDatabase();
             } catch (err) {
-                console.error("Kamera hatası:", err);
-                statusEl.innerText = "Kamera/Flaş erişimi sağlanamadı.";
-                statusEl.style.color = "#f44336";
+                console.warn("Kamera alınamadı, sadece ekran ışığı kullanılacak:", err);
+                statusEl.innerText = "Sadece Ekran Işığı Modu Aktif!";
+                statusEl.style.color = "#ff9800";
+                listenDatabase();
             }
         };
 
@@ -83,19 +86,24 @@
                     advanced: [{ torch: status }]
                 });
             } catch (e) {
-                console.error("Flaş hatası:", e);
+                // Desteklemeyen cihazlarda sessizce geç
             }
         }
 
-        function triggerEffect(isStrobe = false, speed = 150) {
+        function setScreenAndTorch(color, isStrobe = false, speed = 150) {
             clearInterval(strobeTimer);
 
             if (isStrobe) {
                 let state = false;
                 strobeTimer = setInterval(() => {
                     state = !state;
+                    const hexColor = state ? "#ffffff" : "#000000";
+                    flashScreen.style.background = hexColor;
                     setHardwareTorch(state);
                 }, speed);
+            } else {
+                flashScreen.style.background = color;
+                setHardwareTorch(color === "#ffffff");
             }
         }
 
@@ -105,13 +113,11 @@
                 const data = docSnap.data();
 
                 if (data.action === 'ON') {
-                    clearInterval(strobeTimer);
-                    setHardwareTorch(true);
+                    setScreenAndTorch("#ffffff", false);
                 } else if (data.action === 'OFF') {
-                    clearInterval(strobeTimer);
-                    setHardwareTorch(false);
+                    setScreenAndTorch("#000000", false);
                 } else if (data.action === 'STROBE') {
-                    triggerEffect(true, data.speed || 120);
+                    setScreenAndTorch("#ffffff", true, data.speed || 120);
                 }
             });
         }
