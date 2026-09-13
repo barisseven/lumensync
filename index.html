@@ -3,26 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FlashBeat - Canlı Şov (Final)</title>
+    <title>Lumen Sync - Katılımcı</title>
     <style>
         body { font-family: Arial, sans-serif; background: #121212; color: #fff; text-align: center; padding: 40px 20px; margin: 0; }
         .box { max-width: 400px; margin: 0 auto; background: #1e1e1e; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-        button { width: 100%; padding: 15px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; background: #ff9800; color: #fff; transition: background 0.2s; }
-        button:hover { background: #e68a00; }
-        #status { margin-top: 20px; font-size: 16px; color: #aaa; word-break: break-word; }
-        #webcam { display: none; }
+        button { width: 100%; padding: 15px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; background: #ff9800; color: #fff; }
+        #status { margin-top: 20px; font-size: 16px; color: #aaa; }
+        #cam { display: none; }
     </style>
 </head>
 <body>
     <div class="box">
-        <h2>🎵 FlashBeat Katılımcı</h2>
-        <p>Şovun başlaması için lütfen kameraya izin verin:</p>
-        <button onclick="initCamera()">Şova Katıl & İzin Ver</button>
+        <h2>✨ Lumen Sync</h2>
+        <p>Şovun senkronize olması için lütfen butona basın:</p>
+        <button onclick="startShow()">Şova Katıl & İzin Ver</button>
         <div id="status">Durum: Bekleniyor...</div>
     </div>
 
-    <!-- Flaşın çalışması için gerekli gizli video elementi -->
-    <video id="webcam" autoplay playsinline muted></video>
+    <video id="cam" autoplay playsinline muted></video>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
@@ -42,94 +40,65 @@
         const db = getFirestore(app);
 
         let videoTrack = null;
-        let strobeInterval = null;
+        let strobeTimer = null;
 
-        window.initCamera = async function() {
+        window.startShow = async function() {
             const statusEl = document.getElementById('status');
-            const videoEl = document.getElementById('webcam');
-            statusEl.innerText = "Kameraya erişiliyor... Lütfen izin verin.";
+            const videoEl = document.getElementById('cam');
+            statusEl.innerText = "Kameraya bağlanılıyor...";
 
             try {
-                // 1. Önce arka kamerayı bulmayı dene (environment)
-                const constraints = {
-                    video: {
-                        facingMode: { exact: "environment" }
-                    }
-                };
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: { exact: "environment" } }
+                }).catch(() => {
+                    return navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: "environment" }
+                    });
+                });
 
-                let stream;
-                try {
-                    stream = await navigator.mediaDevices.getUserMedia(constraints);
-                } catch (e) {
-                    // Eğer tam eşleşme (exact) başarısız olursa, varsayılan arka kamerayı dene
-                    console.warn("Exact kamera başarısız, varsayılan deneniyor:", e);
-                    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-                }
-
-                // 2. Akışı gizli video elementine bağla (Flaşın çalışması için şart)
                 videoEl.srcObject = stream;
                 await videoEl.play();
-                
                 videoTrack = stream.getVideoTracks()[0];
-                const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
 
-                // 3. Flaş (Torch) desteğini kontrol et
-                if (capabilities.torch || (videoTrack.getSettings && videoTrack.getSettings().torch !== undefined)) {
-                    statusEl.innerText = "Bağlantı Başarılı! Şov başlıyor...";
-                    statusEl.style.color = "#4CAF50";
-                    listenCommands(); // Komutları dinlemeye başla
-                } else {
-                    statusEl.innerText = "UYARI: Bu cihaz flaş (torch) desteklemiyor. Şov çalışmayabilir.";
-                    statusEl.style.color = "#ff9800";
-                    console.error("Desteklenmeyen yetenekler:", capabilities);
-                }
+                statusEl.innerText = "Bağlantı Kuruldu! Şov Bekleniyor...";
+                statusEl.style.color = "#4CAF50";
+                listenDatabase();
 
             } catch (err) {
-                console.error("Genel kamera hatası:", err);
-                statusEl.innerText = "Hata: Kamera izni reddedildi veya arka kamera başlatılamadı. Lütfen izinleri kontrol edin.";
+                console.error(err);
+                statusEl.innerText = "Hata: Kamera izni reddedildi veya arka kamera açılamadı.";
                 statusEl.style.color = "#f44336";
             }
         };
 
-        async function setTorch(state) {
-            if (!videoTrack) {
-                console.warn("Video track henüz hazır değil.");
-                return;
-            }
+        async function setFlash(status) {
+            if (!videoTrack) return;
             try {
-                // Flaş açma/kapatma komutunu uygula
                 await videoTrack.applyConstraints({
-                    advanced: [{ torch: state }]
+                    advanced: [{ torch: status }]
                 });
             } catch (e) {
-                console.error("Flaş (torch) uygulanamadı:", e);
+                console.error("Flaş hatası:", e);
             }
         }
 
-        function listenCommands() {
-            // Firestore'daki 'show/command' belgesini anlık dinler
+        function listenDatabase() {
             onSnapshot(doc(db, "show", "command"), (docSnap) => {
-                if (!docSnap.exists()) {
-                    console.warn("Komut belgesi bulunamadı. Veritabanında 'show/command' oluşturun.");
-                    return;
-                }
+                if (!docSnap.exists()) return;
                 const data = docSnap.data();
-                console.log("Yeni komut alındı:", data);
 
-                // Varsa önceki çakarı durdur
-                clearInterval(strobeInterval);
+                clearInterval(strobeTimer);
 
                 if (data.action === 'ON') {
-                    setTorch(true);
+                    setFlash(true);
                 } else if (data.action === 'OFF') {
-                    setTorch(false);
+                    setFlash(false);
                 } else if (data.action === 'STROBE') {
                     let state = false;
-                    const speed = data.speed || 150; // Varsayılan hız 150ms
-                    strobeInterval = setInterval(() => {
+                    strobeTimer = setInterval(() => {
                         state = !state;
-                        setTorch(state);
-                    }, speed);
+                        setFlash(state);
+                    }, data.speed || 150);
                 }
             });
         }
