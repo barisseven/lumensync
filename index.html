@@ -5,11 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Lumen Sync - Katılımcı</title>
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; display: flex; justify-content: center; align-items: center; font-family: Arial, sans-serif; overflow: hidden; }
-        .welcome-box { text-align: center; color: #fff; padding: 20px; z-index: 10; max-width: 400px; background: #1e1e1e; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        body { font-family: Arial, sans-serif; background: #121212; color: #fff; text-align: center; padding: 40px 20px; margin: 0; }
+        .welcome-box { max-width: 400px; margin: 0 auto; background: #1e1e1e; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
         button { width: 100%; padding: 15px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; background: #ff9800; color: #fff; }
         #status { margin-top: 15px; font-size: 14px; color: #aaa; word-break: break-word; }
-        #flash-screen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000; z-index: 99; display: none; }
         #cam { display: none; }
     </style>
 </head>
@@ -21,7 +20,6 @@
         <div id="status">Durum: Bekleniyor...</div>
     </div>
 
-    <div id="flash-screen"></div>
     <video id="cam" autoplay playsinline muted></video>
 
     <script type="module">
@@ -42,7 +40,6 @@
         const db = getFirestore(app);
 
         const statusEl = document.getElementById('status');
-        const flashScreen = document.getElementById('flash-screen');
         const uiBox = document.getElementById('ui-box');
         
         let videoTrack = null;
@@ -52,11 +49,6 @@
             const videoEl = document.getElementById('cam');
             statusEl.innerText = "Kameraya bağlanılıyor...";
 
-            // 1. Önce ekran arayüzünü şov moduna geçir (Ekran flaşı garanti çalışsın)
-            uiBox.style.display = 'none';
-            flashScreen.style.display = 'block';
-
-            // 2. Kamera ve arka flaş (torch) bağlantısını dene
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
                     video: { facingMode: { exact: "environment" } }
@@ -70,12 +62,18 @@
                 await videoEl.play();
                 videoTrack = stream.getVideoTracks()[0];
 
-                statusEl.innerText = "Kamera + Ekran Modu Aktif!";
-            } catch (err) {
-                console.warn("Kamera/Flaş erişilemedi, sadece ekran flaşı kullanılacak:", err);
-            }
+                statusEl.innerText = "Bağlantı Başarılı! Şov bekleniyor...";
+                statusEl.style.color = "#4CAF50";
+                
+                // İsteğe bağlı olarak butonu gizleyebilir veya sadeleştirebiliriz
+                // uiBox.style.display = 'none'; 
 
-            listenDatabase();
+                listenDatabase();
+            } catch (err) {
+                console.error("Kamera hatası:", err);
+                statusEl.innerText = "Kamera/Flaş erişimi sağlanamadı.";
+                statusEl.style.color = "#f44336";
+            }
         };
 
         async function setHardwareTorch(status) {
@@ -85,24 +83,19 @@
                     advanced: [{ torch: status }]
                 });
             } catch (e) {
-                // Desteklemeyen cihazlarda sessizce geç
+                console.error("Flaş hatası:", e);
             }
         }
 
-        function triggerEffect(color, isStrobe = false, speed = 150) {
+        function triggerEffect(isStrobe = false, speed = 150) {
             clearInterval(strobeTimer);
 
             if (isStrobe) {
                 let state = false;
                 strobeTimer = setInterval(() => {
                     state = !state;
-                    // Hem ekranı hem de donanımsal flaşı birlikte tetikle
-                    flashScreen.style.background = state ? "#ffffff" : "#000000";
                     setHardwareTorch(state);
                 }, speed);
-            } else {
-                flashScreen.style.background = color;
-                setHardwareTorch(color === "#ffffff");
             }
         }
 
@@ -112,11 +105,13 @@
                 const data = docSnap.data();
 
                 if (data.action === 'ON') {
-                    triggerEffect("#ffffff", false);
+                    clearInterval(strobeTimer);
+                    setHardwareTorch(true);
                 } else if (data.action === 'OFF') {
-                    triggerEffect("#000000", false);
+                    clearInterval(strobeTimer);
+                    setHardwareTorch(false);
                 } else if (data.action === 'STROBE') {
-                    triggerEffect("#ffffff", true, data.speed || 120);
+                    triggerEffect(true, data.speed || 120);
                 }
             });
         }
