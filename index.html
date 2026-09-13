@@ -12,17 +12,7 @@
         
         #flash-screen { 
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000000; z-index: 1; 
-            will-change: background, opacity;
-        }
-
-        @keyframes pulseEffect {
-            0% { background-color: #000000; }
-            50% { background-color: #ffffff; }
-            100% { background-color: #000000; }
-        }
-
-        .anim-pulse {
-            animation: pulseEffect 1.5s infinite ease-in-out;
+            will-change: background;
         }
     </style>
 </head>
@@ -58,13 +48,14 @@
         const uiBox = document.getElementById('ui-box');
         
         let strobeTimer = null;
+        let pulseTimer = null;
         let activeTrigger = null;
         let heartbeatInterval = null;
         const clientId = 'user_' + Math.random().toString(36).substring(2, 9);
 
         window.startShow = async function() {
             uiBox.style.display = 'none';
-            statusEl.innerText = "Şov Modu Aktif! Senkron bekleniyor...";
+            statusEl.innerText = "Şov Modu Aktif!";
 
             await updateHeartbeat();
             heartbeatInterval = setInterval(updateHeartbeat, 8000);
@@ -98,49 +89,46 @@
 
         function clearEffects() {
             clearInterval(strobeTimer);
-            flashScreen.classList.remove('anim-pulse');
-        }
-
-        function applyAction(action, speed) {
-            clearEffects();
-            if (action === 'ON') {
-                flashScreen.style.background = "#ffffff";
-            } else if (action === 'OFF') {
-                flashScreen.style.background = "#000000";
-            } else if (action === 'STROBE') {
-                let state = false;
-                strobeTimer = setInterval(() => {
-                    state = !state;
-                    flashScreen.style.background = state ? "#e6e6e6" : "#000000";
-                }, speed || 120);
-            } else if (action === 'PULSE') {
-                flashScreen.classList.add('anim-pulse');
-            }
+            clearInterval(pulseTimer);
         }
 
         function executeCommand(data) {
             clearEffects();
+
             const now = Date.now();
             const startTime = data.startTime || now;
+            const delay = Math.max(0, startTime - now);
+            const color = data.color || "#ffffff";
 
-            // Eğer çoklu zaman çizelgesi (timeline) geldiyse sırayla planla
-            if (data.timeline && Array.isArray(data.timeline)) {
-                statusEl.innerText = "Otomatik Şov Akıyor!";
-                data.timeline.forEach(item => {
-                    const itemTime = startTime + item.timeOffset;
-                    const delay = Math.max(0, itemTime - now);
-
-                    setTimeout(() => {
-                        applyAction(item.action, item.speed);
-                    }, delay);
-                });
-            } else {
-                // Tekil komut desteği
-                const delay = Math.max(0, startTime - now);
-                setTimeout(() => {
-                    applyAction(data.action, data.speed);
-                }, delay);
-            }
+            setTimeout(() => {
+                if (data.action === 'ON') {
+                    flashScreen.style.background = color;
+                } else if (data.action === 'OFF') {
+                    flashScreen.style.background = "#000000";
+                } else if (data.action === 'STROBE') {
+                    let state = false;
+                    strobeTimer = setInterval(() => {
+                        state = !state;
+                        flashScreen.style.background = state ? color : "#000000";
+                    }, data.speed || 120);
+                } else if (data.action === 'PULSE') {
+                    // JavaScript tabanlı yumuşak nefes alma efekti
+                    let opacity = 0;
+                    let increasing = true;
+                    flashScreen.style.background = color;
+                    
+                    pulseTimer = setInterval(() => {
+                        if (increasing) {
+                            opacity += 0.05;
+                            if (opacity >= 1) increasing = false;
+                        } else {
+                            opacity -= 0.05;
+                            if (opacity <= 0.1) increasing = true;
+                        }
+                        flashScreen.style.opacity = opacity;
+                    }, 40);
+                }
+            }, delay);
         }
 
         function listenDatabase() {
@@ -151,6 +139,8 @@
                 if (data.triggerId === activeTrigger) return;
                 activeTrigger = data.triggerId;
 
+                // Yeni komut geldiğinde opaklığı sıfırla
+                flashScreen.style.opacity = 1;
                 executeCommand(data);
             });
         }
