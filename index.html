@@ -5,22 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Lumen Sync - Katılımcı</title>
     <style>
-        body { font-family: Arial, sans-serif; background: #121212; color: #fff; text-align: center; padding: 40px 20px; margin: 0; }
-        .box { max-width: 400px; margin: 0 auto; background: #1e1e1e; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-        button { width: 100%; padding: 15px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; background: #ff9800; color: #fff; }
-        #status { margin-top: 20px; font-size: 15px; color: #aaa; word-break: break-word; }
-        #cam { display: none; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; display: flex; justify-content: center; align-items: center; font-family: Arial, sans-serif; overflow: hidden; }
+        .welcome-box { text-align: center; color: #fff; padding: 20px; z-index: 10; }
+        button { padding: 15px 30px; font-size: 20px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; background: #ff9800; color: #fff; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        #status { margin-top: 15px; font-size: 14px; color: #aaa; }
+        /* Tam ekran şov katmanı */
+        #flash-screen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000; z-index: 99; display: none; }
     </style>
 </head>
 <body>
-    <div class="box">
+    <div class="welcome-box" id="ui-box">
         <h2>✨ Lumen Sync</h2>
-        <p>Şovun senkronize olması için butona basın:</p>
-        <button onclick="startShow()">Şova Katıl & İzin Ver</button>
+        <p>Konser şovu için hazır mısınız?</p>
+        <button onclick="startShow()">Şova Katıl</button>
         <div id="status">Durum: Bekleniyor...</div>
     </div>
 
-    <video id="cam" autoplay playsinline muted></video>
+    <div id="flash-screen"></div>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
@@ -40,63 +41,27 @@
         const db = getFirestore(app);
 
         const statusEl = document.getElementById('status');
-        let videoTrack = null;
-        let imageCapture = null;
+        const flashScreen = document.getElementById('flash-screen');
+        const uiBox = document.getElementById('ui-box');
         let strobeTimer = null;
 
-        window.startShow = async function() {
-            const videoEl = document.getElementById('cam');
-            statusEl.innerText = "Kameraya bağlanılıyor...";
-
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: { exact: "environment" } }
-                }).catch(() => {
-                    return navigator.mediaDevices.getUserMedia({
-                        video: { facingMode: "environment" }
-                    });
-                });
-
-                videoEl.srcObject = stream;
-                await videoEl.play();
-                
-                videoTrack = stream.getVideoTracks()[0];
-
-                // Donanım flaş kontrolü için ImageCapture desteğini deneriz
-                if (window.ImageCapture) {
-                    try {
-                        imageCapture = new ImageCapture(videoTrack);
-                    } catch (e) {
-                        console.log("ImageCapture oluşturulamadı:", e);
-                    }
-                }
-
-                statusEl.innerText = "Bağlantı Başarılı! Komut bekleniyor...";
-                statusEl.style.color = "#4CAF50";
-                
-                listenDatabase();
-
-            } catch (err) {
-                console.error(err);
-                statusEl.innerText = "Kamera Hatası: " + err.message;
-                statusEl.style.color = "#f44336";
-            }
+        window.startShow = function() {
+            uiBox.style.display = 'none';
+            flashScreen.style.display = 'block';
+            statusEl.innerText = "Şov Başladı! Komut bekleniyor...";
+            listenDatabase();
         };
 
-        async function setFlash(status) {
-            if (!videoTrack) return;
-            try {
-                // Önce ImageCapture üzerinden flaşı tetiklemeyi dene (daha kararlıdır)
-                if (imageCapture && typeof imageCapture.setOptions === 'function') {
-                    await imageCapture.setOptions({ torch: status });
-                } else {
-                    // Alternatif olarak standart track kısıtlamasını kullan
-                    await videoTrack.applyConstraints({
-                        advanced: [{ torch: status }]
-                    });
-                }
-            } catch (e) {
-                console.error("Flaş yakma hatası (Donanım kısıtı):", e);
+        function setScreenState(color, isStrobe = false, speed = 150) {
+            clearInterval(strobeTimer);
+            if (isStrobe) {
+                let state = false;
+                strobeTimer = setInterval(() => {
+                    state = !state;
+                    flashScreen.style.background = state ? "#ffffff" : "#000000";
+                }, speed);
+            } else {
+                flashScreen.style.background = color;
             }
         }
 
@@ -104,21 +69,16 @@
             onSnapshot(doc(db, "show", "command"), (docSnap) => {
                 if (!docSnap.exists()) return;
                 const data = docSnap.data();
-                statusEl.innerText = "Komut Uygulanıyor: " + data.action;
-
-                clearInterval(strobeTimer);
 
                 if (data.action === 'ON') {
-                    setFlash(true);
+                    setScreenState("#ffffff", false);
                 } else if (data.action === 'OFF') {
-                    setFlash(false);
+                    setScreenState("#000000", false);
                 } else if (data.action === 'STROBE') {
-                    let state = false;
-                    strobeTimer = setInterval(() => {
-                        state = !state;
-                        setFlash(state);
-                    }, data.speed || 150);
+                    setScreenState("#ffffff", true, data.speed || 120);
                 }
+            }, (error) => {
+                console.error("Dinleme hatası:", error);
             });
         }
     </script>
