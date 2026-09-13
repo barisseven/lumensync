@@ -6,22 +6,23 @@
     <title>Lumen Sync - Katılımcı</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; display: flex; justify-content: center; align-items: center; font-family: Arial, sans-serif; overflow: hidden; }
-        .welcome-box { text-align: center; color: #fff; padding: 20px; z-index: 10; }
-        button { padding: 15px 30px; font-size: 20px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; background: #ff9800; color: #fff; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-        #status { margin-top: 15px; font-size: 14px; color: #aaa; }
-        /* Tam ekran şov katmanı */
+        .welcome-box { text-align: center; color: #fff; padding: 20px; z-index: 10; max-width: 400px; background: #1e1e1e; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        button { width: 100%; padding: 15px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; background: #ff9800; color: #fff; }
+        #status { margin-top: 15px; font-size: 14px; color: #aaa; word-break: break-word; }
         #flash-screen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000; z-index: 99; display: none; }
+        #cam { display: none; }
     </style>
 </head>
 <body>
     <div class="welcome-box" id="ui-box">
         <h2>✨ Lumen Sync</h2>
-        <p>Konser şovu için hazır mısınız?</p>
-        <button onclick="startShow()">Şova Katıl</button>
+        <p>Konser şovu için izin verin:</p>
+        <button onclick="startShow()">Şova Katıl & İzin Ver</button>
         <div id="status">Durum: Bekleniyor...</div>
     </div>
 
     <div id="flash-screen"></div>
+    <video id="cam" autoplay playsinline muted></video>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
@@ -43,25 +44,65 @@
         const statusEl = document.getElementById('status');
         const flashScreen = document.getElementById('flash-screen');
         const uiBox = document.getElementById('ui-box');
+        
+        let videoTrack = null;
         let strobeTimer = null;
 
-        window.startShow = function() {
+        window.startShow = async function() {
+            const videoEl = document.getElementById('cam');
+            statusEl.innerText = "Kameraya bağlanılıyor...";
+
+            // 1. Önce ekran arayüzünü şov moduna geçir (Ekran flaşı garanti çalışsın)
             uiBox.style.display = 'none';
             flashScreen.style.display = 'block';
-            statusEl.innerText = "Şov Başladı! Komut bekleniyor...";
+
+            // 2. Kamera ve arka flaş (torch) bağlantısını dene
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: { exact: "environment" } }
+                }).catch(() => {
+                    return navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: "environment" }
+                    });
+                });
+
+                videoEl.srcObject = stream;
+                await videoEl.play();
+                videoTrack = stream.getVideoTracks()[0];
+
+                statusEl.innerText = "Kamera + Ekran Modu Aktif!";
+            } catch (err) {
+                console.warn("Kamera/Flaş erişilemedi, sadece ekran flaşı kullanılacak:", err);
+            }
+
             listenDatabase();
         };
 
-        function setScreenState(color, isStrobe = false, speed = 150) {
+        async function setHardwareTorch(status) {
+            if (!videoTrack) return;
+            try {
+                await videoTrack.applyConstraints({
+                    advanced: [{ torch: status }]
+                });
+            } catch (e) {
+                // Desteklemeyen cihazlarda sessizce geç
+            }
+        }
+
+        function triggerEffect(color, isStrobe = false, speed = 150) {
             clearInterval(strobeTimer);
+
             if (isStrobe) {
                 let state = false;
                 strobeTimer = setInterval(() => {
                     state = !state;
+                    // Hem ekranı hem de donanımsal flaşı birlikte tetikle
                     flashScreen.style.background = state ? "#ffffff" : "#000000";
+                    setHardwareTorch(state);
                 }, speed);
             } else {
                 flashScreen.style.background = color;
+                setHardwareTorch(color === "#ffffff");
             }
         }
 
@@ -71,14 +112,12 @@
                 const data = docSnap.data();
 
                 if (data.action === 'ON') {
-                    setScreenState("#ffffff", false);
+                    triggerEffect("#ffffff", false);
                 } else if (data.action === 'OFF') {
-                    setScreenState("#000000", false);
+                    triggerEffect("#000000", false);
                 } else if (data.action === 'STROBE') {
-                    setScreenState("#ffffff", true, data.speed || 120);
+                    triggerEffect("#ffffff", true, data.speed || 120);
                 }
-            }, (error) => {
-                console.error("Dinleme hatası:", error);
             });
         }
     </script>
