@@ -3,16 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lumen Sync - Katılımcı</title>
+    <title>Lumen Sync - Ekran Işığı Katılımcı</title>
     <style>
-        body { font-family: Arial, sans-serif; background: #121212; color: #fff; text-align: center; padding: 40px 20px; margin: 0; }
-        .welcome-box { max-width: 400px; margin: 0 auto; background: #1e1e1e; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); z-index: 10; position: relative; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; display: flex; justify-content: center; align-items: center; font-family: Arial, sans-serif; overflow: hidden; }
+        .welcome-box { text-align: center; color: #fff; padding: 30px; background: #1e1e1e; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); z-index: 10; max-width: 350px; }
         button { width: 100%; padding: 15px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; background: #ff9800; color: #fff; }
         #status { margin-top: 15px; font-size: 14px; color: #aaa; word-break: break-word; }
         
-        /* Tam ekran ışık katmanı (Arka planda siyah başlar, komutla beyaz/çakar olur) */
-        #flash-screen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000000; z-index: 1; transition: background 0.05s ease; }
-        #cam { display: none; }
+        /* Tam ekran ışık katmanı */
+        #flash-screen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000000; z-index: 1; }
     </style>
 </head>
 <body>
@@ -20,12 +19,10 @@
 
     <div class="welcome-box" id="ui-box">
         <h2>✨ Lumen Sync</h2>
-        <p>Konser şovu için izin verin:</p>
-        <button onclick="startShow()">Şova Katıl & İzin Ver</button>
+        <p>Konser şovu için hazır mısınız?</p>
+        <button onclick="startShow()">Şova Katıl</button>
         <div id="status">Durum: Bekleniyor...</div>
     </div>
-
-    <video id="cam" autoplay playsinline muted></video>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
@@ -46,65 +43,39 @@
 
         const statusEl = document.getElementById('status');
         const flashScreen = document.getElementById('flash-screen');
+        const uiBox = document.getElementById('ui-box');
         
-        let videoTrack = null;
         let strobeTimer = null;
+        let activeTrigger = null;
 
-        window.startShow = async function() {
-            const videoEl = document.getElementById('cam');
-            statusEl.innerText = "Kameraya bağlanılıyor...";
-
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: { exact: "environment" } }
-                }).catch(() => {
-                    return navigator.mediaDevices.getUserMedia({
-                        video: { facingMode: "environment" }
-                    });
-                });
-
-                videoEl.srcObject = stream;
-                await videoEl.play();
-                videoTrack = stream.getVideoTracks()[0];
-
-                statusEl.innerText = "Kamera + Ekran Işığı Hazır!";
-                statusEl.style.color = "#4CAF50";
-
-                listenDatabase();
-            } catch (err) {
-                console.warn("Kamera alınamadı, sadece ekran ışığı kullanılacak:", err);
-                statusEl.innerText = "Sadece Ekran Işığı Modu Aktif!";
-                statusEl.style.color = "#ff9800";
-                listenDatabase();
-            }
+        window.startShow = function() {
+            // Arayüzü gizle, tam ekran ışık moduna geç
+            uiBox.style.display = 'none';
+            statusEl.innerText = "Şov Modu Aktif! Komut bekleniyor...";
+            
+            listenDatabase();
         };
 
-        async function setHardwareTorch(status) {
-            if (!videoTrack) return;
-            try {
-                await videoTrack.applyConstraints({
-                    advanced: [{ torch: status }]
-                });
-            } catch (e) {
-                // Desteklemeyen cihazlarda sessizce geç
-            }
-        }
-
-        function setScreenAndTorch(color, isStrobe = false, speed = 150) {
+        function executeCommand(data) {
             clearInterval(strobeTimer);
 
-            if (isStrobe) {
-                let state = false;
-                strobeTimer = setInterval(() => {
-                    state = !state;
-                    const hexColor = state ? "#ffffff" : "#000000";
-                    flashScreen.style.background = hexColor;
-                    setHardwareTorch(state);
-                }, speed);
-            } else {
-                flashScreen.style.background = color;
-                setHardwareTorch(color === "#ffffff");
-            }
+            const now = Date.now();
+            const startTime = data.startTime || now;
+            const delay = Math.max(0, startTime - now);
+
+            setTimeout(() => {
+                if (data.action === 'ON') {
+                    flashScreen.style.background = "#ffffff";
+                } else if (data.action === 'OFF') {
+                    flashScreen.style.background = "#000000";
+                } else if (data.action === 'STROBE') {
+                    let state = false;
+                    strobeTimer = setInterval(() => {
+                        state = !state;
+                        flashScreen.style.background = state ? "#ffffff" : "#000000";
+                    }, data.speed || 120);
+                }
+            }, delay);
         }
 
         function listenDatabase() {
@@ -112,13 +83,10 @@
                 if (!docSnap.exists()) return;
                 const data = docSnap.data();
 
-                if (data.action === 'ON') {
-                    setScreenAndTorch("#ffffff", false);
-                } else if (data.action === 'OFF') {
-                    setScreenAndTorch("#000000", false);
-                } else if (data.action === 'STROBE') {
-                    setScreenAndTorch("#ffffff", true, data.speed || 120);
-                }
+                if (data.triggerId === activeTrigger) return;
+                activeTrigger = data.triggerId;
+
+                executeCommand(data);
             });
         }
     </script>
