@@ -36,19 +36,12 @@
             measurementId: "G-K75JNFBH3V"
         };
 
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
         const statusEl = document.getElementById('status');
-
-        let app, db;
-        try {
-            app = initializeApp(firebaseConfig);
-            db = getFirestore(app);
-            console.log("Firebase başlatıldı.");
-        } catch (e) {
-            statusEl.innerText = "Firebase Başlatma Hatası: " + e.message;
-            statusEl.style.color = "#f44336";
-        }
-
         let videoTrack = null;
+        let imageCapture = null;
         let strobeTimer = null;
 
         window.startShow = async function() {
@@ -66,9 +59,19 @@
 
                 videoEl.srcObject = stream;
                 await videoEl.play();
+                
                 videoTrack = stream.getVideoTracks()[0];
 
-                statusEl.innerText = "Kamera Hazır. Veritabanı dinleniyor...";
+                // Donanım flaş kontrolü için ImageCapture desteğini deneriz
+                if (window.ImageCapture) {
+                    try {
+                        imageCapture = new ImageCapture(videoTrack);
+                    } catch (e) {
+                        console.log("ImageCapture oluşturulamadı:", e);
+                    }
+                }
+
+                statusEl.innerText = "Bağlantı Başarılı! Komut bekleniyor...";
                 statusEl.style.color = "#4CAF50";
                 
                 listenDatabase();
@@ -83,46 +86,40 @@
         async function setFlash(status) {
             if (!videoTrack) return;
             try {
-                await videoTrack.applyConstraints({
-                    advanced: [{ torch: status }]
-                });
+                // Önce ImageCapture üzerinden flaşı tetiklemeyi dene (daha kararlıdır)
+                if (imageCapture && typeof imageCapture.setOptions === 'function') {
+                    await imageCapture.setOptions({ torch: status });
+                } else {
+                    // Alternatif olarak standart track kısıtlamasını kullan
+                    await videoTrack.applyConstraints({
+                        advanced: [{ torch: status }]
+                    });
+                }
             } catch (e) {
-                console.error("Flaş donanım hatası:", e);
+                console.error("Flaş yakma hatası (Donanım kısıtı):", e);
             }
         }
 
         function listenDatabase() {
-            try {
-                onSnapshot(doc(db, "show", "command"), (docSnap) => {
-                    if (!docSnap.exists()) {
-                        statusEl.innerText = "Bağlantı Var ama 'show/command' belgesi bulunamadı!";
-                        return;
-                    }
-                    const data = docSnap.data();
-                    statusEl.innerText = "Komut Alındı: " + data.action;
+            onSnapshot(doc(db, "show", "command"), (docSnap) => {
+                if (!docSnap.exists()) return;
+                const data = docSnap.data();
+                statusEl.innerText = "Komut Uygulanıyor: " + data.action;
 
-                    clearInterval(strobeTimer);
+                clearInterval(strobeTimer);
 
-                    if (data.action === 'ON') {
-                        setFlash(true);
-                    } else if (data.action === 'OFF') {
-                        setFlash(false);
-                    } else if (data.action === 'STROBE') {
-                        let state = false;
-                        strobeTimer = setInterval(() => {
-                            state = !state;
-                            setFlash(state);
-                        }, data.speed || 150);
-                    }
-                }, (error) => {
-                    console.error("Firestore dinleme hatası:", error);
-                    statusEl.innerText = "Veritabanı Dinleme Hatası: " + error.message;
-                    statusEl.style.color = "#f44336";
-                });
-            } catch (e) {
-                statusEl.innerText = "Bağlantı Kurulamadı: " + e.message;
-                statusEl.style.color = "#f44336";
-            }
+                if (data.action === 'ON') {
+                    setFlash(true);
+                } else if (data.action === 'OFF') {
+                    setFlash(false);
+                } else if (data.action === 'STROBE') {
+                    let state = false;
+                    strobeTimer = setInterval(() => {
+                        state = !state;
+                        setFlash(state);
+                    }, data.speed || 150);
+                }
+            });
         }
     </script>
 </body>
