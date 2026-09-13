@@ -12,7 +12,7 @@
         
         #flash-screen { 
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000000; z-index: 1; 
-            will-change: background; /* GPU hızlandırma ile pil tasarrufu sağlar */
+            will-change: background;
         }
     </style>
 </head>
@@ -28,7 +28,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
-        import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyDntqYxoZXhJZmxtbGaPOF54EEW0F1Co8",
@@ -49,22 +49,25 @@
         
         let strobeTimer = null;
         let activeTrigger = null;
+        let heartbeatInterval = null;
         const clientId = 'user_' + Math.random().toString(36).substring(2, 9);
 
         window.startShow = async function() {
             uiBox.style.display = 'none';
             statusEl.innerText = "Şov Modu Aktif! Bağlanılıyor...";
 
-            // Katılımcıyı sisteme kaydet (Admin panelindeki sayaç için)
-            try {
-                await setDoc(doc(db, "clients", clientId), {
-                    joinedAt: Date.now()
-                });
-            } catch (e) {
-                console.warn("Sayaç kaydı yapılamadı:", e);
-            }
+            // İlk kayıt
+            await updateHeartbeat();
 
-            // Ekranın uyku moduna geçmesini engelle (Wake Lock API)
+            // Her 8 saniyede bir "ben buradayım" sinyali gönder
+            heartbeatInterval = setInterval(updateHeartbeat, 8000);
+
+            // Sekme kapatıldığında veya çıkıldığında kaydı hemen sil
+            window.addEventListener('beforeunload', () => {
+                navigator.sendBeacon ? deleteClientBeacon() : removeClientData();
+            });
+
+            // Ekranın uyku moduna geçmesini engelle
             if ('wakeLock' in navigator) {
                 try {
                     await navigator.wakeLock.request('screen');
@@ -73,6 +76,27 @@
 
             listenDatabase();
         };
+
+        async function updateHeartbeat() {
+            try {
+                await setDoc(doc(db, "clients", clientId), {
+                    lastSeen: Date.now()
+                });
+            } catch (e) {
+                console.warn("Heartbeat güncellenemedi:", e);
+            }
+        }
+
+        async function removeClientData() {
+            try {
+                await deleteDoc(doc(db, "clients", clientId));
+            } catch (e) {}
+        }
+
+        function deleteClientBeacon() {
+            // Tarayıcı kapanırken güvenli silme isteği (opsiyonel destek)
+            removeClientData();
+        }
 
         function executeCommand(data) {
             clearInterval(strobeTimer);
@@ -90,7 +114,6 @@
                     let state = false;
                     strobeTimer = setInterval(() => {
                         state = !state;
-                        // Tam beyaz yerine %90 parlaklık kullanarak bataryayı ve ısınmayı optimize eder
                         flashScreen.style.background = state ? "#e6e6e6" : "#000000";
                     }, data.speed || 120);
                 }
