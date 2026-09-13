@@ -12,7 +12,18 @@
         
         #flash-screen { 
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000000; z-index: 1; 
-            will-change: background;
+            will-change: background, opacity;
+        }
+
+        /* Kalp atışı / Nefes alma animasyonu (Yumuşak parlama) */
+        @keyframes pulseEffect {
+            0% { background-color: #000000; }
+            50% { background-color: #ffffff; }
+            100% { background-color: #000000; }
+        }
+
+        .anim-pulse {
+            animation: pulseEffect 1.5s infinite ease-in-out;
         }
     </style>
 </head>
@@ -28,7 +39,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
-        import { getFirestore, doc, onSnapshot, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyDntqYxoZXhJZmxtbGaPOF54EEW0F1Co8",
@@ -56,18 +67,13 @@
             uiBox.style.display = 'none';
             statusEl.innerText = "Şov Modu Aktif! Bağlanılıyor...";
 
-            // İlk kayıt
             await updateHeartbeat();
-
-            // Her 8 saniyede bir "ben buradayım" sinyali gönder
             heartbeatInterval = setInterval(updateHeartbeat, 8000);
 
-            // Sekme kapatıldığında veya çıkıldığında kaydı hemen sil
             window.addEventListener('beforeunload', () => {
-                navigator.sendBeacon ? deleteClientBeacon() : removeClientData();
+                removeClientData();
             });
 
-            // Ekranın uyku moduna geçmesini engelle
             if ('wakeLock' in navigator) {
                 try {
                     await navigator.wakeLock.request('screen');
@@ -82,24 +88,22 @@
                 await setDoc(doc(db, "clients", clientId), {
                     lastSeen: Date.now()
                 });
-            } catch (e) {
-                console.warn("Heartbeat güncellenemedi:", e);
-            }
+            } catch (e) {}
         }
 
         async function removeClientData() {
             try {
-                await deleteDoc(doc(db, "clients", clientId));
+                await setDoc(doc(db, "clients", clientId), { lastSeen: 0 });
             } catch (e) {}
         }
 
-        function deleteClientBeacon() {
-            // Tarayıcı kapanırken güvenli silme isteği (opsiyonel destek)
-            removeClientData();
+        function clearEffects() {
+            clearInterval(strobeTimer);
+            flashScreen.classList.remove('anim-pulse');
         }
 
         function executeCommand(data) {
-            clearInterval(strobeTimer);
+            clearEffects();
 
             const now = Date.now();
             const startTime = data.startTime || now;
@@ -116,6 +120,9 @@
                         state = !state;
                         flashScreen.style.background = state ? "#e6e6e6" : "#000000";
                     }, data.speed || 120);
+                } else if (data.action === 'PULSE') {
+                    // Kalp atışı / Nefes efekti sınıfını ekle
+                    flashScreen.classList.add('anim-pulse');
                 }
             }, delay);
         }
