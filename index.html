@@ -15,7 +15,6 @@
             will-change: background, opacity;
         }
 
-        /* Kalp atışı / Nefes alma animasyonu (Yumuşak parlama) */
         @keyframes pulseEffect {
             0% { background-color: #000000; }
             50% { background-color: #ffffff; }
@@ -65,7 +64,7 @@
 
         window.startShow = async function() {
             uiBox.style.display = 'none';
-            statusEl.innerText = "Şov Modu Aktif! Bağlanılıyor...";
+            statusEl.innerText = "Şov Modu Aktif! Senkron bekleniyor...";
 
             await updateHeartbeat();
             heartbeatInterval = setInterval(updateHeartbeat, 8000);
@@ -102,29 +101,46 @@
             flashScreen.classList.remove('anim-pulse');
         }
 
+        function applyAction(action, speed) {
+            clearEffects();
+            if (action === 'ON') {
+                flashScreen.style.background = "#ffffff";
+            } else if (action === 'OFF') {
+                flashScreen.style.background = "#000000";
+            } else if (action === 'STROBE') {
+                let state = false;
+                strobeTimer = setInterval(() => {
+                    state = !state;
+                    flashScreen.style.background = state ? "#e6e6e6" : "#000000";
+                }, speed || 120);
+            } else if (action === 'PULSE') {
+                flashScreen.classList.add('anim-pulse');
+            }
+        }
+
         function executeCommand(data) {
             clearEffects();
-
             const now = Date.now();
             const startTime = data.startTime || now;
-            const delay = Math.max(0, startTime - now);
 
-            setTimeout(() => {
-                if (data.action === 'ON') {
-                    flashScreen.style.background = "#ffffff";
-                } else if (data.action === 'OFF') {
-                    flashScreen.style.background = "#000000";
-                } else if (data.action === 'STROBE') {
-                    let state = false;
-                    strobeTimer = setInterval(() => {
-                        state = !state;
-                        flashScreen.style.background = state ? "#e6e6e6" : "#000000";
-                    }, data.speed || 120);
-                } else if (data.action === 'PULSE') {
-                    // Kalp atışı / Nefes efekti sınıfını ekle
-                    flashScreen.classList.add('anim-pulse');
-                }
-            }, delay);
+            // Eğer çoklu zaman çizelgesi (timeline) geldiyse sırayla planla
+            if (data.timeline && Array.isArray(data.timeline)) {
+                statusEl.innerText = "Otomatik Şov Akıyor!";
+                data.timeline.forEach(item => {
+                    const itemTime = startTime + item.timeOffset;
+                    const delay = Math.max(0, itemTime - now);
+
+                    setTimeout(() => {
+                        applyAction(item.action, item.speed);
+                    }, delay);
+                });
+            } else {
+                // Tekil komut desteği
+                const delay = Math.max(0, startTime - now);
+                setTimeout(() => {
+                    applyAction(data.action, data.speed);
+                }, delay);
+            }
         }
 
         function listenDatabase() {
