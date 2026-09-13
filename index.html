@@ -8,14 +8,14 @@
         body { font-family: Arial, sans-serif; background: #121212; color: #fff; text-align: center; padding: 40px 20px; margin: 0; }
         .box { max-width: 400px; margin: 0 auto; background: #1e1e1e; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
         button { width: 100%; padding: 15px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; background: #ff9800; color: #fff; }
-        #status { margin-top: 20px; font-size: 16px; color: #aaa; }
+        #status { margin-top: 20px; font-size: 15px; color: #aaa; word-break: break-word; }
         #cam { display: none; }
     </style>
 </head>
 <body>
     <div class="box">
         <h2>✨ Lumen Sync</h2>
-        <p>Şovun senkronize olması için lütfen butona basın:</p>
+        <p>Şovun senkronize olması için butona basın:</p>
         <button onclick="startShow()">Şova Katıl & İzin Ver</button>
         <div id="status">Durum: Bekleniyor...</div>
     </div>
@@ -36,14 +36,22 @@
             measurementId: "G-K75JNFBH3V"
         };
 
-        const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
+        const statusEl = document.getElementById('status');
+
+        let app, db;
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            console.log("Firebase başlatıldı.");
+        } catch (e) {
+            statusEl.innerText = "Firebase Başlatma Hatası: " + e.message;
+            statusEl.style.color = "#f44336";
+        }
 
         let videoTrack = null;
         let strobeTimer = null;
 
         window.startShow = async function() {
-            const statusEl = document.getElementById('status');
             const videoEl = document.getElementById('cam');
             statusEl.innerText = "Kameraya bağlanılıyor...";
 
@@ -60,13 +68,14 @@
                 await videoEl.play();
                 videoTrack = stream.getVideoTracks()[0];
 
-                statusEl.innerText = "Bağlantı Kuruldu! Şov Bekleniyor...";
+                statusEl.innerText = "Kamera Hazır. Veritabanı dinleniyor...";
                 statusEl.style.color = "#4CAF50";
+                
                 listenDatabase();
 
             } catch (err) {
                 console.error(err);
-                statusEl.innerText = "Hata: Kamera izni reddedildi veya arka kamera açılamadı.";
+                statusEl.innerText = "Kamera Hatası: " + err.message;
                 statusEl.style.color = "#f44336";
             }
         };
@@ -78,29 +87,42 @@
                     advanced: [{ torch: status }]
                 });
             } catch (e) {
-                console.error("Flaş hatası:", e);
+                console.error("Flaş donanım hatası:", e);
             }
         }
 
         function listenDatabase() {
-            onSnapshot(doc(db, "show", "command"), (docSnap) => {
-                if (!docSnap.exists()) return;
-                const data = docSnap.data();
+            try {
+                onSnapshot(doc(db, "show", "command"), (docSnap) => {
+                    if (!docSnap.exists()) {
+                        statusEl.innerText = "Bağlantı Var ama 'show/command' belgesi bulunamadı!";
+                        return;
+                    }
+                    const data = docSnap.data();
+                    statusEl.innerText = "Komut Alındı: " + data.action;
 
-                clearInterval(strobeTimer);
+                    clearInterval(strobeTimer);
 
-                if (data.action === 'ON') {
-                    setFlash(true);
-                } else if (data.action === 'OFF') {
-                    setFlash(false);
-                } else if (data.action === 'STROBE') {
-                    let state = false;
-                    strobeTimer = setInterval(() => {
-                        state = !state;
-                        setFlash(state);
-                    }, data.speed || 150);
-                }
-            });
+                    if (data.action === 'ON') {
+                        setFlash(true);
+                    } else if (data.action === 'OFF') {
+                        setFlash(false);
+                    } else if (data.action === 'STROBE') {
+                        let state = false;
+                        strobeTimer = setInterval(() => {
+                            state = !state;
+                            setFlash(state);
+                        }, data.speed || 150);
+                    }
+                }, (error) => {
+                    console.error("Firestore dinleme hatası:", error);
+                    statusEl.innerText = "Veritabanı Dinleme Hatası: " + error.message;
+                    statusEl.style.color = "#f44336";
+                });
+            } catch (e) {
+                statusEl.innerText = "Bağlantı Kurulamadı: " + e.message;
+                statusEl.style.color = "#f44336";
+            }
         }
     </script>
 </body>
