@@ -28,7 +28,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
-        import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, getDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyDntqYxoZXhJZmxtbGaPOF54EEW0F1Co8",
@@ -51,10 +51,38 @@
         let pulseTimer = null;
         let activeTrigger = null;
         let heartbeatInterval = null;
+        let serverTimeOffset = 0; // Saat sapmasını eşitlemek için ofset
         const clientId = 'user_' + Math.random().toString(36).substring(2, 9);
+
+        // Sunucu ile saat senkronizasyonu (Clock Sync)
+        async function synchronizeClock() {
+            try {
+                const timeRef = doc(db, "system", "timesync");
+                const localBefore = Date.now();
+                await setDoc(timeRef, { time: serverTimestamp() });
+                const snap = await getDoc(timeRef);
+                if (snap.exists() && snap.data().time) {
+                    const serverTime = snap.data().time.toMillis();
+                    const localAfter = Date.now();
+                    const roundTrip = localAfter - localBefore;
+                    const estimatedServerTime = serverTime + (roundTrip / 2);
+                    serverTimeOffset = estimatedServerTime - localAfter;
+                }
+            } catch (e) {
+                console.warn("Clock sync atlanıldı, yerel saat kullanılıyor.");
+            }
+        }
+
+        // Senkronize edilmiş ortak zaman fonksiyonu
+        function getSyncedTime() {
+            return Date.now() + serverTimeOffset;
+        }
 
         window.startShow = async function() {
             uiBox.style.display = 'none';
+            statusEl.innerText = "Saat Senkronize Ediliyor...";
+
+            await synchronizeClock();
             statusEl.innerText = "Şov Modu Aktif!";
 
             await updateHeartbeat();
@@ -76,7 +104,7 @@
         async function updateHeartbeat() {
             try {
                 await setDoc(doc(db, "clients", clientId), {
-                    lastSeen: Date.now()
+                    lastSeen: getSyncedTime()
                 });
             } catch (e) {}
         }
@@ -87,7 +115,6 @@
             } catch (e) {}
         }
 
-        // Önceki tüm efektleri ve zamanlayıcıları kesin olarak temizle (Renk karışmasını önler)
         function clearAllEffects() {
             if (strobeTimer) {
                 clearInterval(strobeTimer);
@@ -103,7 +130,7 @@
         function executeCommand(data) {
             clearAllEffects();
 
-            const now = Date.now();
+            const now = getSyncedTime();
             const startTime = data.startTime || now;
             const delay = Math.max(0, startTime - now);
             const color = data.color || "#ffffff";
