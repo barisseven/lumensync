@@ -51,10 +51,9 @@
         let pulseTimer = null;
         let activeTrigger = null;
         let heartbeatInterval = null;
-        let serverTimeOffset = 0; // Saat sapmasını eşitlemek için ofset
+        let serverTimeOffset = 0;
         const clientId = 'user_' + Math.random().toString(36).substring(2, 9);
 
-        // Sunucu ile saat senkronizasyonu (Clock Sync)
         async function synchronizeClock() {
             try {
                 const timeRef = doc(db, "system", "timesync");
@@ -73,7 +72,6 @@
             }
         }
 
-        // Senkronize edilmiş ortak zaman fonksiyonu
         function getSyncedTime() {
             return Date.now() + serverTimeOffset;
         }
@@ -86,7 +84,8 @@
             statusEl.innerText = "Şov Modu Aktif!";
 
             await updateHeartbeat();
-            heartbeatInterval = setInterval(updateHeartbeat, 8000);
+            // Yükü azaltmak için heartbeat süresi 30 saniyeye çıkarıldı
+            heartbeatInterval = setInterval(updateHeartbeat, 30000);
 
             window.addEventListener('beforeunload', () => {
                 removeClientData();
