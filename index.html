@@ -51,12 +51,11 @@
         let pulseTimer = null;
         let activeTrigger = null;
         let heartbeatInterval = null;
-        let cachedTimeline = null; // Belleğe önceden yüklenen şov senaryosu
         const clientId = 'user_' + Math.random().toString(36).substring(2, 9);
 
         window.startShow = async function() {
             uiBox.style.display = 'none';
-            statusEl.innerText = "Şov Modu Aktif! Hazırlanıyor...";
+            statusEl.innerText = "Şov Modu Aktif!";
 
             await updateHeartbeat();
             heartbeatInterval = setInterval(updateHeartbeat, 8000);
@@ -88,70 +87,58 @@
             } catch (e) {}
         }
 
-        function clearEffects() {
-            clearInterval(strobeTimer);
-            clearInterval(pulseTimer);
+        // Önceki tüm efektleri ve zamanlayıcıları kesin olarak temizle (Renk karışmasını önler)
+        function clearAllEffects() {
+            if (strobeTimer) {
+                clearInterval(strobeTimer);
+                strobeTimer = null;
+            }
+            if (pulseTimer) {
+                clearInterval(pulseTimer);
+                pulseTimer = null;
+            }
             flashScreen.style.opacity = 1;
         }
 
-        function applyAction(action, color, speed) {
-            clearEffects();
-            const targetColor = color || "#ffffff";
-
-            if (action === 'ON') {
-                flashScreen.style.background = targetColor;
-            } else if (action === 'OFF') {
-                flashScreen.style.background = "#000000";
-            } else if (action === 'STROBE') {
-                let state = false;
-                strobeTimer = setInterval(() => {
-                    state = !state;
-                    flashScreen.style.background = state ? targetColor : "#000000";
-                }, speed || 120);
-            } else if (action === 'PULSE') {
-                let opacity = 0;
-                let increasing = true;
-                flashScreen.style.background = targetColor;
-                
-                pulseTimer = setInterval(() => {
-                    if (increasing) {
-                        opacity += 0.05;
-                        if (opacity >= 1) increasing = false;
-                    } else {
-                        opacity -= 0.05;
-                        if (opacity <= 0.1) increasing = true;
-                    }
-                    flashScreen.style.opacity = opacity;
-                }, 40);
-            }
-        }
-
         function executeCommand(data) {
-            clearEffects();
+            clearAllEffects();
+
             const now = Date.now();
             const startTime = data.startTime || now;
+            const delay = Math.max(0, startTime - now);
+            const color = data.color || "#ffffff";
 
-            if (data.type === 'TIMELINE_PRELOAD' && data.timeline) {
-                // Şov verisi belleğe alınıyor
-                cachedTimeline = data.timeline;
-                statusEl.innerText = "Şov Senaryosu Yüklendi! Başlıyor...";
+            setTimeout(() => {
+                statusEl.innerText = `Komut: ${data.action}`;
 
-                cachedTimeline.forEach(item => {
-                    const itemTime = startTime + item.timeOffset;
-                    const delay = Math.max(0, itemTime - now);
-
-                    setTimeout(() => {
-                        applyAction(item.action, item.color, item.speed);
-                    }, delay);
-                });
-            } else {
-                // Manuel anlık komut
-                statusEl.innerText = `Manuel Komut: ${data.action}`;
-                const delay = Math.max(0, startTime - now);
-                setTimeout(() => {
-                    applyAction(data.action, data.color, data.speed);
-                }, delay);
-            }
+                if (data.action === 'ON') {
+                    flashScreen.style.background = color;
+                } else if (data.action === 'OFF') {
+                    flashScreen.style.background = "#000000";
+                } else if (data.action === 'STROBE') {
+                    let state = false;
+                    flashScreen.style.background = "#000000";
+                    strobeTimer = setInterval(() => {
+                        state = !state;
+                        flashScreen.style.background = state ? color : "#000000";
+                    }, data.speed || 120);
+                } else if (data.action === 'PULSE') {
+                    let opacity = 0;
+                    let increasing = true;
+                    flashScreen.style.background = color;
+                    
+                    pulseTimer = setInterval(() => {
+                        if (increasing) {
+                            opacity += 0.05;
+                            if (opacity >= 1) increasing = false;
+                        } else {
+                            opacity -= 0.05;
+                            if (opacity <= 0.1) increasing = true;
+                        }
+                        flashScreen.style.opacity = opacity;
+                    }, 40);
+                }
+            }, delay);
         }
 
         function listenDatabase() {
