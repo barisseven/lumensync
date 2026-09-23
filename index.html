@@ -8,6 +8,7 @@
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; display: flex; justify-content: center; align-items: center; font-family: Arial, sans-serif; overflow: hidden; }
         .welcome-box { text-align: center; color: #fff; padding: 30px; background: #1e1e1e; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); z-index: 10; max-width: 350px; }
         button { width: 100%; padding: 15px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; background: #ff9800; color: #fff; }
+        button:disabled { background: #555; cursor: not-allowed; }
         #status { margin-top: 15px; font-size: 14px; color: #aaa; word-break: break-word; }
         
         #flash-screen { 
@@ -22,13 +23,13 @@
     <div class="welcome-box" id="ui-box">
         <h2>✨ Lumen Sync</h2>
         <p>Konser şovu için hazır mısınız?</p>
-        <button onclick="startShow()">Şova Katıl</button>
+        <button id="join-btn" onclick="startShow()">Şova Katıl</button>
         <div id="status">Durum: Bekleniyor...</div>
     </div>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
-        import { getFirestore, doc, onSnapshot, setDoc, getDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyDntqYxoZXhJZmxtbGaPOF54EEW0F1Co8",
@@ -43,32 +44,99 @@
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
 
+        // Sabitler ve Sınırlar
+        const HEARTBEAT_INTERVAL = 30000;
+        const DEFAULT_STROBE_SPEED = 80;
+        const MIN_SPEED = 16;
+        const MAX_SPEED = 5000;
+        const STALE_TIMESYNC_THRESHOLD = 300000; // 5 dakika
+
         const statusEl = document.getElementById('status');
         const flashScreen = document.getElementById('flash-screen');
         const uiBox = document.getElementById('ui-box');
+        const joinBtn = document.getElementById('join-btn');
         
-        let strobeTimer = null;
-        let pulseTimer = null;
         let activeTrigger = null;
+        let lastCommandData = null;
         let heartbeatInterval = null;
         let serverTimeOffset = 0;
-        const clientId = 'user_' + Math.random().toString(36).substring(2, 9);
+        let wakeLock = null;
+        let unsubscribeCommand = null;
+        let showStarted = false;
+        let commandGeneration = 0;
 
+        // Effect & Animation Loop State
+        let activeEffectType = null;
+        let effectStartTime = 0;
+        let effectColor = "#ffffff";
+        let effectSpeed = DEFAULT_STROBE_SPEED;
+        let animationFrameId = null;
+
+        // Timeline Engine State
+        let showState = "IDLE"; // IDLE, WAITING, RUNNING, RECONNECTING, COMPLETED, STOPPED
+        let activeTimeline = null;
+        let timelineStartTime = 0;
+        let timelineDuration = null;
+        let timelineIntervalId = null;
+        let activeTimelineIndex = -1;
+
+        // Manuel Komutlar ve Zamanlayıcı Temizliği İçin Sorumluluk Yönetimi
+        let scheduledCommandTimeouts = [];
+
+        // Kalıcı ve Güvenli Client ID Yönetimi
+        const clientId = (() => {
+            try {
+                const existingId = localStorage.getItem('lumenClientId');
+                if (existingId) return existingId;
+                const newId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'user_' + Math.random().toString(36).substring(2, 15);
+                localStorage.setItem('lumenClientId', newId);
+                return newId;
+            } catch (e) {
+                return 'user_' + Math.random().toString(36).substring(2, 15);
+            }
+        })();
+
+        // Clock Synchronization (Read-Heavy, Stale Kontrollü, Güvenli Tip Dönüşümlü)
         async function synchronizeClock() {
             try {
                 const timeRef = doc(db, "system", "timesync");
-                const localBefore = Date.now();
-                await setDoc(timeRef, { time: serverTimestamp() });
                 const snap = await getDoc(timeRef);
-                if (snap.exists() && snap.data().time) {
-                    const serverTime = snap.data().time.toMillis();
-                    const localAfter = Date.now();
-                    const roundTrip = localAfter - localBefore;
-                    const estimatedServerTime = serverTime + (roundTrip / 2);
-                    serverTimeOffset = estimatedServerTime - localAfter;
+                
+                if (!snap.exists()) {
+                    console.warn("Clock sync document bulunamadı, local fallback kullanılıyor.");
+                    return;
                 }
-            } catch (e) {
-                console.warn("Clock sync atlanıldı, yerel saat kullanılıyor.");
+
+                const data = snap.data();
+                const rawServerTime = data.serverTime;
+                const rawUpdatedAt = data.updatedAt;
+
+                let serverTime;
+                if (typeof rawServerTime === "number") {
+                    serverTime = rawServerTime;
+                } else if (rawServerTime && typeof rawServerTime.toMillis === "function") {
+                    serverTime = rawServerTime.toMillis();
+                } else {
+                    throw new Error("Geçersiz serverTime formatı");
+                }
+
+                if (rawUpdatedAt) {
+                    let updatedAt;
+                    if (typeof rawUpdatedAt === "number") {
+                        updatedAt = rawUpdatedAt;
+                    } else if (typeof rawUpdatedAt.toMillis === "function") {
+                        updatedAt = rawUpdatedAt.toMillis();
+                    }
+                    if (updatedAt && (Date.now() - updatedAt > STALE_TIMESYNC_THRESHOLD)) {
+                        console.warn("Clock sync document stale (eski), local clock fallback kullanılıyor.");
+                        return;
+                    }
+                }
+
+                const localNow = Date.now();
+                serverTimeOffset = serverTime - localNow;
+            } catch (error) {
+                console.warn("Clock sync başarısız, yerel saat fallback kullanılıyor:", error);
             }
         }
 
@@ -76,106 +144,426 @@
             return Date.now() + serverTimeOffset;
         }
 
+        // Wake Lock Yönetimi (Duplicate istek ve aktif state korumalı)
+        async function requestWakeLock() {
+            if (!('wakeLock' in navigator) || wakeLock || document.visibilityState !== 'visible') return;
+            try {
+                wakeLock = await navigator.wakeLock.request('screen');
+                wakeLock.addEventListener('release', () => {
+                    wakeLock = null;
+                });
+            } catch (error) {
+                console.warn('Wake Lock alınamadı:', error);
+            }
+        }
+
+        document.addEventListener('visibilitychange', async () => {
+            if (document.visibilityState === 'visible' && !wakeLock) {
+                await requestWakeLock();
+            }
+        });
+
         window.startShow = async function() {
+            if (showStarted) return;
+            showStarted = true;
+            joinBtn.disabled = true;
+
             uiBox.style.display = 'none';
-            statusEl.innerText = "Saat Senkronize Ediliyor...";
+            statusEl.innerText = "Senkronizasyon Yapılıyor...";
 
             await synchronizeClock();
-            statusEl.innerText = "Şov Modu Aktif!";
+            statusEl.innerText = "Şov Bekleniyor... Hazırsınız!";
 
             await updateHeartbeat();
-            // Yükü azaltmak için heartbeat süresi 30 saniyeye çıkarıldı
-            heartbeatInterval = setInterval(updateHeartbeat, 30000);
+            if (heartbeatInterval) clearInterval(heartbeatInterval);
+            heartbeatInterval = setInterval(updateHeartbeat, HEARTBEAT_INTERVAL);
 
-            window.addEventListener('beforeunload', () => {
-                removeClientData();
-            });
-
-            if ('wakeLock' in navigator) {
-                try {
-                    await navigator.wakeLock.request('screen');
-                } catch (err) {}
-            }
-
+            await requestWakeLock();
             listenDatabase();
         };
 
+        let heartbeatInProgress = false;
         async function updateHeartbeat() {
+            if (heartbeatInProgress) return;
+            heartbeatInProgress = true;
             try {
                 await setDoc(doc(db, "clients", clientId), {
                     lastSeen: getSyncedTime()
                 });
-            } catch (e) {}
+            } catch (error) {
+                console.warn("Heartbeat başarısız:", error);
+            } finally {
+                heartbeatInProgress = false;
+            }
         }
 
-        async function removeClientData() {
-            try {
-                await setDoc(doc(db, "clients", clientId), { lastSeen: 0 });
-            } catch (e) {}
-        }
-
-        function clearAllEffects() {
-            if (strobeTimer) {
-                clearInterval(strobeTimer);
-                strobeTimer = null;
+        // Effect Cleanup Sorumluluk Ayrımı
+        function clearActiveEffect() {
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = null;
             }
-            if (pulseTimer) {
-                clearInterval(pulseTimer);
-                pulseTimer = null;
-            }
+            activeEffectType = null;
+            effectStartTime = 0;
+            effectColor = "#ffffff";
+            effectSpeed = DEFAULT_STROBE_SPEED;
             flashScreen.style.opacity = 1;
         }
 
-        function executeCommand(data) {
-            clearAllEffects();
+        function clearScheduledTimeline() {
+            if (timelineIntervalId) {
+                clearInterval(timelineIntervalId);
+                timelineIntervalId = null;
+            }
+            activeTimeline = null;
+            timelineDuration = null;
+            activeTimelineIndex = -1;
+        }
+
+        function clearScheduledCommands() {
+            scheduledCommandTimeouts.forEach(t => clearTimeout(t));
+            scheduledCommandTimeouts = [];
+        }
+
+        function clearAllEffects() {
+            clearActiveEffect();
+            clearScheduledTimeline();
+            clearScheduledCommands();
+        }
+
+        // Düzeltilmiş sanitizeColor() Fonksiyonu (Doğru | Alternatör Karakterleri ile)
+        function sanitizeColor(color) {
+            if (typeof color !== 'string') return "#ffffff";
+            const trimmed = color.trim();
+            const hexRegex = /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/;
+            const rgbRegex = /^rgb\(\s*(25[0-5]\vert{}2[0-4]\d\vert{}1\d\d\vert{}\d?\d)\s*,\s*(25[0-5]\vert{}2[0-4]\d\vert{}1\d\d\vert{}\d?\d)\s*,\s*(25[0-5]\vert{}2[0-4]\d\vert{}1\d\d\vert{}\d?\d)\s*\)$/;
+            const rgbaRegex = /^rgba\(\s*(25[0-5]\vert{}2[0-4]\d\vert{}1\d\d\vert{}\d?\d)\s*,\s*(25[0-5]\vert{}2[0-4]\d\vert{}1\d\d\vert{}\d?\d)\s*,\s*(25[0-5]\vert{}2[0-4]\d\vert{}1\d\d\vert{}\d?\d)\s*,\s*(0\vert{}1\vert{}0?\.\d+)\s*\)$/;
+
+            if (hexRegex.test(trimmed) || rgbRegex.test(trimmed) || rgbaRegex.test(trimmed)) {
+                return trimmed;
+            }
+            return "#ffffff";
+        }
+
+        function sanitizeSpeed(speed) {
+            const num = Number(speed);
+            if (!Number.isFinite(num) || num < MIN_SPEED || num > MAX_SPEED) {
+                return DEFAULT_STROBE_SPEED;
+            }
+            return num;
+        }
+
+        // Command Tipi Belirleme (STOP, TIMELINE, MANUAL)
+        function getCommandType(data) {
+            if (data.type === "STOP" || data.action === "STOP") {
+                return "STOP";
+            }
+            if (Array.isArray(data.timeline)) {
+                return "TIMELINE";
+            }
+            return "MANUAL";
+        }
+
+        // Merkezi Timeline Pozisyon Hesaplama
+        function getCurrentTimelinePosition(startTime, timeline, duration) {
+            const elapsed = getSyncedTime() - startTime;
+            if (elapsed < 0) {
+                return { status: "WAITING", index: -1, elapsed };
+            }
+
+            let currentIndex = -1;
+            for (let i = 0; i < timeline.length; i++) {
+                if (timeline[i].timeOffset <= elapsed) {
+                    currentIndex = i;
+                } else {
+                    break;
+                }
+            }
+
+            if (currentIndex === -1) {
+                return { status: "WAITING", index: -1, elapsed };
+            }
+
+            const lastItem = timeline[timeline.length - 1];
+            const maxDuration = typeof duration === 'number' && Number.isFinite(duration) ? duration : (lastItem.timeOffset + 10000);
+            
+            if (elapsed > maxDuration) {
+                return { status: "COMPLETED", index: currentIndex, elapsed };
+            }
+
+            return { status: "RUNNING", index: currentIndex, elapsed };
+        }
+
+        // Synced-Time Tabanlı Animasyon Döngüsü (Strobe & Pulse)
+        function startEffectLoop(type, color, speed, providedEffectStartTime) {
+            clearActiveEffect();
+            activeEffectType = type;
+            effectColor = sanitizeColor(color);
+            effectSpeed = sanitizeSpeed(speed);
+            effectStartTime = providedEffectStartTime !== undefined ? providedEffectStartTime : getSyncedTime();
+
+            function renderLoop() {
+                if (!activeEffectType) return;
+                const now = getSyncedTime();
+                const elapsed = now - effectStartTime;
+
+                if (elapsed < 0) {
+                    flashScreen.style.background = "#000000";
+                    flashScreen.style.opacity = 1;
+                    animationFrameId = requestAnimationFrame(renderLoop);
+                    return;
+                }
+
+                if (activeEffectType === 'STROBE') {
+                    const phase = Math.floor(elapsed / effectSpeed) % 2;
+                    flashScreen.style.background = phase === 1 ? effectColor : "#000000";
+                    flashScreen.style.opacity = 1;
+                } else if (activeEffectType === 'PULSE') {
+                    const duration = 1000;
+                    const progress = (elapsed % duration) / duration;
+                    const opacity = Math.abs(Math.sin(progress * Math.PI));
+                    flashScreen.style.background = effectColor;
+                    flashScreen.style.opacity = Math.max(0.1, opacity);
+                } else if (activeEffectType === 'ON') {
+                    flashScreen.style.background = effectColor;
+                    flashScreen.style.opacity = 1;
+                    return;
+                } else if (activeEffectType === 'OFF') {
+                    flashScreen.style.background = "#000000";
+                    flashScreen.style.opacity = 1;
+                    return;
+                }
+
+                animationFrameId = requestAnimationFrame(renderLoop);
+            }
+
+            renderLoop();
+        }
+
+        // Timeline Engine Sürücüsü (Gerçek State Hesaplamalı & Reconnect Resume Uyumlu)
+        function runTimelineEngine(startTime, timeline, duration, isReconnectResume = false) {
+            clearScheduledTimeline();
+            activeTimeline = timeline;
+            timelineStartTime = startTime;
+            timelineDuration = duration;
+            activeTimelineIndex = -1;
+
+            const initialPos = getCurrentTimelinePosition(startTime, timeline, duration);
+
+            if (initialPos.status === "COMPLETED") {
+                showState = "COMPLETED";
+                statusEl.innerText = "Şov Tamamlandı.";
+                return;
+            }
+
+            if (initialPos.status === "WAITING") {
+                showState = "WAITING";
+                statusEl.innerText = "Şov Bekleniyor...";
+            } else {
+                showState = "RUNNING";
+                activeTimelineIndex = initialPos.index;
+                const item = timeline[activeTimelineIndex];
+                statusEl.innerText = isReconnectResume ? `Şov (Resume): ${item.action}` : `Şov (Senkronize): ${item.action}`;
+                const computedEffectStart = timelineStartTime + item.timeOffset;
+                startEffectLoop(item.action, sanitizeColor(item.color), sanitizeSpeed(item.speed), computedEffectStart);
+            }
+
+            timelineIntervalId = setInterval(() => {
+                if (!activeTimeline || showState === "COMPLETED" || showState === "STOPPED") return;
+                const pos = getCurrentTimelinePosition(timelineStartTime, activeTimeline, timelineDuration);
+
+                if (pos.status === "COMPLETED") {
+                    statusEl.innerText = "Şov Tamamlandı.";
+                    clearAllEffects();
+                    showState = "COMPLETED";
+                    return;
+                }
+
+                if (pos.status === "WAITING") {
+                    if (showState !== "WAITING") {
+                        showState = "WAITING";
+                        statusEl.innerText = "Şov Bekleniyor...";
+                    }
+                    return;
+                }
+
+                if (pos.status === "RUNNING") {
+                    if (showState !== "RUNNING") {
+                        showState = "RUNNING";
+                    }
+                    if (activeTimelineIndex !== pos.index) {
+                        activeTimelineIndex = pos.index;
+                        const currentItem = activeTimeline[activeTimelineIndex];
+                        statusEl.innerText = `Şov: ${currentItem.action}`;
+                        const computedEffectStart = timelineStartTime + currentItem.timeOffset;
+                        startEffectLoop(currentItem.action, sanitizeColor(currentItem.color), sanitizeSpeed(currentItem.speed), computedEffectStart);
+                    }
+                }
+            }, 200);
+        }
+
+        function validateCommand(data) {
+            if (!data || typeof data !== 'object') return false;
+            if (!data.triggerId || typeof data.triggerId !== "string" || data.triggerId.trim() === '' || data.triggerId.length > 256) {
+                console.warn("Geçersiz triggerId algılandı:", data);
+                return false;
+            }
+            if (typeof data.startTime !== 'number' || !Number.isFinite(data.startTime)) {
+                console.warn("Geçersiz startTime algılandı:", data);
+                return false;
+            }
+
+            const cmdType = getCommandType(data);
+
+            if (cmdType === "STOP") {
+                return true;
+            }
+
+            if (cmdType === "TIMELINE") {
+                if (!Array.isArray(data.timeline) || data.timeline.length === 0) {
+                    console.warn("Geçersiz veya boş timeline dizisi.");
+                    return false;
+                }
+
+                if (data.duration !== undefined) {
+                    if (typeof data.duration !== 'number' || !Number.isFinite(data.duration) || data.duration < 0) {
+                        console.warn("Geçersiz duration değeri:", data.duration);
+                        return false;
+                    }
+                }
+
+                let lastOffset = -1;
+                const validActions = ['ON', 'OFF', 'STROBE', 'PULSE'];
+
+                for (const item of data.timeline) {
+                    if (!item || typeof item !== 'object') return false;
+                    if (typeof item.timeOffset !== 'number' || !Number.isFinite(item.timeOffset) || item.timeOffset < 0) return false;
+                    if (typeof item.action !== 'string' || !validActions.includes(item.action)) return false;
+
+                    if (item.timeOffset < lastOffset) {
+                        console.warn("Timeline timeOffset değerleri artan sırada değil.");
+                        return false;
+                    }
+                    lastOffset = item.timeOffset;
+                }
+
+                const lastItem = data.timeline[data.timeline.length - 1];
+                if (typeof data.duration === 'number' && data.duration < lastItem.timeOffset) {
+                    console.warn("Duration değeri son item'ın timeOffset değerinden küçük olamaz.");
+                    return false;
+                }
+
+                return true;
+            }
+
+            if (cmdType === "MANUAL") {
+                const validActions = ['ON', 'OFF', 'STROBE', 'PULSE'];
+                if (!data.action || typeof data.action !== 'string' || !validActions.includes(data.action)) {
+                    console.warn("Geçersiz manuel komut action değeri:", data.action);
+                    return false;
+                }
+                return true;
+            }
+
+            return false;
+        }
+
+        function executeCommand(data, isReconnectRecovery = false) {
+            if (!validateCommand(data)) return;
+
+            commandGeneration++;
+            const currentGen = commandGeneration;
 
             const now = getSyncedTime();
-            const startTime = data.startTime || now;
-            const delay = Math.max(0, startTime - now);
-            const color = data.color || "#ffffff";
+            const startTime = data.startTime;
+            const cmdType = getCommandType(data);
 
-            setTimeout(() => {
-                statusEl.innerText = `Komut: ${data.action}`;
-
-                if (data.action === 'ON') {
-                    flashScreen.style.background = color;
-                } else if (data.action === 'OFF') {
+            if (cmdType === "STOP") {
+                const delay = Math.max(0, startTime - now);
+                if (delay === 0 || (isReconnectRecovery && now >= startTime)) {
+                    clearAllEffects();
                     flashScreen.style.background = "#000000";
-                } else if (data.action === 'STROBE') {
-                    let state = false;
-                    flashScreen.style.background = "#000000";
-                    strobeTimer = setInterval(() => {
-                        state = !state;
-                        flashScreen.style.background = state ? color : "#000000";
-                    }, data.speed || 120);
-                } else if (data.action === 'PULSE') {
-                    let opacity = 0;
-                    let increasing = true;
-                    flashScreen.style.background = color;
-                    
-                    pulseTimer = setInterval(() => {
-                        if (increasing) {
-                            opacity += 0.05;
-                            if (opacity >= 1) increasing = false;
-                        } else {
-                            opacity -= 0.05;
-                            if (opacity <= 0.1) increasing = true;
-                        }
-                        flashScreen.style.opacity = opacity;
-                    }, 40);
+                    flashScreen.style.opacity = 1;
+                    statusEl.innerText = "Şov durduruldu.";
+                    showState = "STOPPED";
+                } else {
+                    const timeoutId = setTimeout(() => {
+                        if (currentGen !== commandGeneration) return;
+                        clearAllEffects();
+                        flashScreen.style.background = "#000000";
+                        flashScreen.style.opacity = 1;
+                        statusEl.innerText = "Şov durduruldu.";
+                        showState = "STOPPED";
+                    }, delay);
+                    scheduledCommandTimeouts.push(timeoutId);
                 }
-            }, delay);
+                return;
+            }
+
+            clearAllEffects();
+
+            if (cmdType === "TIMELINE") {
+                const initialPos = getCurrentTimelinePosition(startTime, data.timeline, data.duration);
+                if (initialPos.status === "COMPLETED") {
+                    showState = "COMPLETED";
+                    statusEl.innerText = "Şov Tamamlandı.";
+                    return;
+                }
+                statusEl.innerText = isReconnectRecovery ? "Şov Senaryosu (Resume Edildi)..." : "Şov Senaryosu Yüklendi!";
+                runTimelineEngine(startTime, data.timeline, data.duration, isReconnectRecovery);
+                return;
+            }
+
+            if (cmdType === "MANUAL") {
+                const delay = Math.max(0, startTime - now);
+                if (isReconnectRecovery && delay === 0) {
+                    statusEl.innerText = `Komut (Resume): ${data.action}`;
+                    showState = "RUNNING";
+                    startEffectLoop(data.action, data.color, data.speed, startTime);
+                } else {
+                    const timeoutId = setTimeout(() => {
+                        if (currentGen !== commandGeneration) return;
+                        statusEl.innerText = `Komut: ${data.action}`;
+                        showState = "RUNNING";
+                        startEffectLoop(data.action, data.color, data.speed, startTime);
+                    }, delay);
+                    scheduledCommandTimeouts.push(timeoutId);
+                }
+            }
+        }
+
+        function processCommandData(data, isReconnectRecovery = false) {
+            if (!validateCommand(data)) return;
+            lastCommandData = data;
+            executeCommand(data, isReconnectRecovery);
         }
 
         function listenDatabase() {
-            onSnapshot(doc(db, "show", "command"), (docSnap) => {
+            if (unsubscribeCommand) {
+                unsubscribeCommand();
+            }
+
+            let isFirstSnapshot = true;
+
+            unsubscribeCommand = onSnapshot(doc(db, "show", "command"), (docSnap) => {
                 if (!docSnap.exists()) return;
                 const data = docSnap.data();
 
-                if (data.triggerId === activeTrigger) return;
-                activeTrigger = data.triggerId;
+                const isReconnectRecovery = showState === "RECONNECTING";
 
-                executeCommand(data);
+                if (data.triggerId === activeTrigger && !isReconnectRecovery) {
+                    return;
+                }
+
+                activeTrigger = data.triggerId;
+                
+                const shouldResume = isFirstSnapshot || isReconnectRecovery;
+                isFirstSnapshot = false;
+
+                processCommandData(data, shouldResume);
+            }, (error) => {
+                console.warn("Firestore snapshot dinleme hatası (reconnect bekleniyor):", error);
+                showState = "RECONNECTING";
             });
         }
     </script>
